@@ -3,10 +3,13 @@ import rclpy
 import random
 from rclpy.node import Node
 from rclpy.action import ActionClient
-from geometry_msgs.msg import PoseStamped, Twist
+from geometry_msgs.msg import PoseStamped, Twist, Point
 from sensor_msgs.msg import LaserScan
 from nav2_msgs.action import NavigateToPose
 from action_msgs.msg import GoalStatus
+
+# Import the professor's custom status message
+from project_status.msg import Status
 
 class NavigationNode(Node):
     def __init__(self):
@@ -14,16 +17,24 @@ class NavigationNode(Node):
         self._action_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
         self._cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         
+        # Setup Status Publisher
+        self._status_pub = self.create_publisher(Status, '/status', 10)
+        self.current_status = Status()
+        self.status_timer = self.create_timer(1.0, self.publish_status)
+        
         self.create_subscription(PoseStamped, '/goal_pose', self.goal_callback, 10)
         self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
         
         self.has_goal = False
         self.turn_direction = 0.5
-        self.get_logger().info('Node ready. Randomly roaming the house using LiDAR...')
+        self.get_logger().info('Node ready. Randomly roaming the house...')
+
+    def publish_status(self):
+        self._status_pub.publish(self.current_status)
 
     def scan_callback(self, msg: LaserScan):
         if self.has_goal:
-            return  # Stop roaming immediately if Nav2 is driving
+            return  # Let Nav2 handle driving
 
         ranges = msg.ranges
         front_ranges = ranges[0:20] + ranges[-20:]
@@ -31,7 +42,6 @@ class NavigationNode(Node):
         min_dist = min(valid_ranges) if valid_ranges else 10.0
 
         twist = Twist()
-        # FIXED: Reduced threshold to 0.30m so it gets closer to walls
         if min_dist < 0.30:
             twist.linear.x = 0.0
             twist.angular.z = self.turn_direction
@@ -45,16 +55,19 @@ class NavigationNode(Node):
     def goal_callback(self, msg: PoseStamped):
         if not self.has_goal:
             self.has_goal = True
-            self._cmd_vel_pub.publish(Twist()) # Force immediate stop
-            self.get_logger().info('Random roaming stopped. Nav2 taking over.')
+            self._cmd_vel_pub.publish(Twist()) # Stop roaming
+            self.get_logger().info('Goal received! Nav2 taking over.')
+            
+        # Update professor's status tracker
+        self.current_status.goal1_received = True
+        self.current_status.goal1_achieved = False
 
-        self.get_logger().info(f'Received new goal: X={msg.pose.position.x:.2f}, Y={msg.pose.position.y:.2f}')
         if not self._action_client.wait_for_server(timeout_sec=5.0):
             return
 
         goal_msg = NavigateToPose.Goal()
         goal_msg.pose = msg
-        send_goal_future = self._action_client.send_goal_async(goal_msg, feedback_callback=self.feedback_callback)
+        send_goal_future = self._action_client.send_goal_async(goal_msg)
         send_goal_future.add_done_callback(self.goal_response_callback)
 
     def goal_response_callback(self, future):
@@ -64,13 +77,11 @@ class NavigationNode(Node):
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(self.get_result_callback)
 
-    def feedback_callback(self, feedback_msg):
-        self.get_logger().info(f'Distance remaining: {feedback_msg.feedback.distance_remaining:.2f}m', throttle_duration_sec=2.0)
-
     def get_result_callback(self, future):
         if future.result().status == GoalStatus.STATUS_SUCCEEDED:
             self.get_logger().info('SUCCESS: Destination reached!')
-            self.has_goal = False # Resume random roaming
+            self.current_status.goal1_achieved = True
+            self.has_goal = False 
             
 def main(args=None):
     rclpy.init(args=args)
