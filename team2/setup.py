@@ -24,9 +24,9 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'goal1 = team2.Goal1Publisher:main',
-            'goal2 = team2.Goal2Publisher:main',
-            'goal3 = team2.Goal3Publisher:main',
+            'goal1 = team2.goal1:main',
+            'goal2 = team2.goal2:main',
+            'goal3 = team2.goal3:main',
         ],
     },
 )

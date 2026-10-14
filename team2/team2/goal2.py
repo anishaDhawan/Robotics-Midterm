@@ -1,5 +1,5 @@
 import rclpy
-from rclpy.node import node
+from rclpy.node import Node
 
 from geometry_msgs.msg import Point
 
@@ -7,7 +7,7 @@ class Goal2Publisher(Node):
 
     def __init__(self):
         super().__init__('goal2publisher')
-        self.publisher_ = self.create_publisher(Point, 'topic', 10)
+        self.publisher_ = self.create_publisher(Point, 'team2/goal2', 10)
         timer_period = 0.5
         self.timer = self.create_timer(timer_period, self.timer_callback)
         self.i = 0
