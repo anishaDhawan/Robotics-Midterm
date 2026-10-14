@@ -24,6 +24,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'navigation = team2.navigation:main',
             'goal1 = team2.goal1:main',
             'goal2 = team2.goal2:main',
             'goal3 = team2.goal3:main',
