@@ -3,7 +3,7 @@ import rclpy
 import random
 from rclpy.node import Node
 from rclpy.action import ActionClient
-from geometry_msgs.msg import Point, Twist
+from geometry_msgs.msg import Point, Twist, PointStamped
 from sensor_msgs.msg import LaserScan
 from nav2_msgs.action import NavigateToPose
 from action_msgs.msg import GoalStatus
@@ -23,9 +23,9 @@ class NavigationNode(Node):
         self.create_timer(1.0, self.publish_status)
         
         # Listen to the specific topics graded by the professor
-        self.create_subscription(Point, '/goal1', self.goal1_callback, 10)
-        self.create_subscription(Point, '/goal2', self.goal2_callback, 10)
-        self.create_subscription(Point, '/goal3', self.goal3_callback, 10)
+        self.create_subscription(PointStamped, '/goal1', self.goal1_callback, 10)
+        self.create_subscription(PointStamped, '/goal2', self.goal2_callback, 10)
+        self.create_subscription(PointStamped, '/goal3', self.goal3_callback, 10)
         self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
         
         self.has_goal = False
@@ -59,7 +59,7 @@ class NavigationNode(Node):
             
         self._cmd_vel_pub.publish(twist)
 
-    def dispatch_nav2_goal(self, pt: Point, goal_id: int):
+    def dispatch_nav2_goal(self, pt: PointStamped, goal_id: int):
         self.has_goal = True
         self.active_goal_id = goal_id
         self._cmd_vel_pub.publish(Twist()) # Force immediate stop
@@ -69,37 +69,38 @@ class NavigationNode(Node):
             return
             
         goal_msg = NavigateToPose.Goal()
-        goal_msg.pose.header.frame_id = 'map'
-        goal_msg.pose.header.stamp = self.get_clock().now().to_msg()
-        goal_msg.pose.pose.position.x = pt.x
-        goal_msg.pose.pose.position.y = pt.y
+        goal_msg.pose.header = pt.header
+        # goal_msg.pose.header.frame_id = 'map'
+        # goal_msg.pose.header.stamp = self.get_clock().now().to_msg()
+        goal_msg.pose.pose.position.x = pt.point.x
+        goal_msg.pose.pose.position.y = pt.point.y
         goal_msg.pose.pose.orientation.w = 1.0
         
         send_goal_future = self._action_client.send_goal_async(goal_msg)
         send_goal_future.add_done_callback(self.goal_response_callback)
 
-    def goal1_callback(self, msg: Point):
+    def goal1_callback(self, msg: PointStamped):
         if self.current_status.emergency:
             self.get_logger().warn('Ignoring /goal1: Robot is in EMERGENCY mode!')
             return
             
-        self.get_logger().info(f'Received /goal1: X={msg.x:.2f}, Y={msg.y:.2f}')
+        self.get_logger().info(f'Received /goal1: X={msg.point.x:.2f}, Y={msg.point.y:.2f}')
         self.current_status.goal1_received = True
         self.current_status.goal1_achieved = False
         self.dispatch_nav2_goal(msg, 1)
 
-    def goal2_callback(self, msg: Point):
+    def goal2_callback(self, msg: PointStamped):
         if self.current_status.emergency:
             self.get_logger().warn('Ignoring /goal2: Robot is in EMERGENCY mode!')
             return
             
-        self.get_logger().info(f'Received /goal2: X={msg.x:.2f}, Y={msg.y:.2f}')
+        self.get_logger().info(f'Received /goal2: X={msg.point.x:.2f}, Y={msg.point.y:.2f}')
         self.current_status.goal2_received = True
         self.current_status.goal2_achieved = False
         self.dispatch_nav2_goal(msg, 2)
 
-    def goal3_callback(self, msg: Point):
-        self.get_logger().warn(f'EMERGENCY /goal3 RECEIVED: X={msg.x:.2f}, Y={msg.y:.2f}')
+    def goal3_callback(self, msg: PointStamped):
+        self.get_logger().warn(f'EMERGENCY /goal3 RECEIVED: X={msg.point.x:.2f}, Y={msg.point.y:.2f}')
         self.current_status.emergency = True
         self.dispatch_nav2_goal(msg, 3) 
 
