@@ -7,6 +7,7 @@ from geometry_msgs.msg import Point, Twist, PointStamped
 from sensor_msgs.msg import LaserScan
 from nav2_msgs.action import NavigateToPose
 from action_msgs.msg import GoalStatus
+from queue import Queue
 
 # Import the professor's custom status message
 from project_status.msg import Status
@@ -29,9 +30,11 @@ class NavigationNode(Node):
         self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
         
         self.has_goal = False
+        self.active_msg = PointStamped()
         self.active_goal_id = 0
         self.turn_direction = 0.5
         self.get_logger().info('Midterm Node ready. Roaming safely...')
+        self.queue = Queue()
 
     def publish_status(self):
         self._status_pub.publish(self.current_status)
@@ -62,6 +65,7 @@ class NavigationNode(Node):
     def dispatch_nav2_goal(self, pt: PointStamped, goal_id: int):
         self.has_goal = True
         self.active_goal_id = goal_id
+        self.active_msg = pt
         self._cmd_vel_pub.publish(Twist()) # Force immediate stop
         
         if not self._action_client.wait_for_server(timeout_sec=3.0):
@@ -102,6 +106,10 @@ class NavigationNode(Node):
     def goal3_callback(self, msg: PointStamped):
         self.get_logger().warn(f'EMERGENCY /goal3 RECEIVED: X={msg.point.x:.2f}, Y={msg.point.y:.2f}')
         self.current_status.emergency = True
+
+        if (self.has_goal == True):
+            self.queue.put((self.active_msg, self.active_goal_id))
+
         self.dispatch_nav2_goal(msg, 3) 
 
     def goal_response_callback(self, future):
@@ -122,6 +130,12 @@ class NavigationNode(Node):
             elif self.active_goal_id == 3:
                 self.get_logger().info('Emergency goal secured.')
                 
+                if (self.queue.qsize() != 0):
+                    mssg, id = self.queue.get()
+                    self.get_logger().info(f'Returning to Goal {id} at X={mssg.point.x:.2f}, Y={mssg.point.y:.2f}')
+                    self.active_goal_id = id
+                    self.dispatch_nav2_goal(mssg, id)
+            
             self.has_goal = False 
             
 def main(args=None):
