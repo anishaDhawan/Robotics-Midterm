@@ -14,6 +14,8 @@ setup(
         ('share/' + package_name, ['package.xml']),
         # This line tells colcon build to include all files in the launch folder
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
+        # Install the RGB-D camera settings used by the optional House launcher.
+        (os.path.join('share', package_name, 'config'), glob('config/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -25,6 +27,7 @@ setup(
     entry_points={
         'console_scripts': [
             'navigation = team2.navigation:main',
+            'human_location_node = team2.human_location_node:main',
             'goal1 = team2.goal1:main',
             'goal2 = team2.goal2:main',
             'goal3 = team2.goal3:main',
