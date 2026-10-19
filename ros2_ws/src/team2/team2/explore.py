@@ -2,7 +2,6 @@ import math
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import OccupancyGrid, Odometry
-from geometry_msgs.msg import PointStamped
 from std_msgs.msg import Bool
 from rclpy.action import ActionClient
 from nav2_msgs.action import NavigateToPose
@@ -18,13 +17,8 @@ class FrontierExplorer(Node):
         self.map_sub = self.create_subscription(OccupancyGrid, '/map', self.map_callback, 10)
         self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         
-        # Listen for manual goals to pause
-        self.create_subscription(PointStamped, '/goal1', self.pause_callback, 10)
-        self.create_subscription(PointStamped, '/goal2', self.pause_callback, 10)
-        self.create_subscription(PointStamped, '/goal3', self.pause_callback, 10)
-        
-        # Listen to the Master Controller's custom resume topic
-        self.create_subscription(Bool, '/explore_resume', self.resume_callback, 10)
+        # Listen strictly to the Master Controller's explore state commands
+        self.create_subscription(Bool, '/explore_control', self.control_callback, 10)
         
         self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
         
@@ -32,20 +26,23 @@ class FrontierExplorer(Node):
         self.latest_map = None
         self.goal_in_progress = False
 
-        self.get_logger().info('Frontier Explorer Node active with Auto-Resume logic.')
+        self.get_logger().info('Frontier Explorer Node active with Master Controller control.')
 
-    def pause_callback(self, msg):
-        if not self.paused:
-            self.get_logger().info('Manual goal detected! Pausing exploration.')
-            self.paused = True
-            if self.current_goal_handle:
-                self.current_goal_handle.cancel_goal_async()
-
-    def resume_callback(self, msg):
-        if self.paused and msg.data:
-            self.get_logger().info('Master Controller finished goal. Resuming exploration!')
-            self.paused = False
-            self.find_and_send_frontier()
+    def control_callback(self, msg: Bool):
+        if not msg.data:
+            # False = Pause exploration
+            if not self.paused:
+                self.get_logger().info('Master Controller requested pause. Stopping exploration.')
+                self.paused = True
+                if self.current_goal_handle:
+                    self.current_goal_handle.cancel_goal_async()
+        else:
+            # True = Resume exploration
+            if self.paused:
+                self.get_logger().info('Master Controller requested resume. Resuming exploration!')
+                self.paused = False
+                self.goal_in_progress = False
+                self.find_and_send_frontier()
 
     def odom_callback(self, msg):
         self.current_pose = msg.pose.pose
@@ -141,8 +138,8 @@ class FrontierExplorer(Node):
             self.get_logger().info('Reached target area.')
             self.goal_in_progress = False
         else:
-            self.get_logger().warn('Goal preempted externally! Pausing explorer.')
-            self.paused = True
+            self.get_logger().warn('Goal preempted externally.')
+            self.goal_in_progress = False
 
 def main(args=None):
     rclpy.init(args=args)
