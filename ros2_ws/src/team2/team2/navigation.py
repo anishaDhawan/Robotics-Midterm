@@ -1,177 +1,121 @@
 #!/usr/bin/env python3
 import rclpy
-import random
 from rclpy.node import Node
 from rclpy.action import ActionClient
-from geometry_msgs.msg import Point, Twist, PointStamped
-from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Bool
+from geometry_msgs.msg import PointStamped, Point
 from nav2_msgs.action import NavigateToPose
-from action_msgs.msg import GoalStatus
-from queue import Queue
-
+from nav_msgs.msg import Odometry
 from project_status.msg import Status
+import math
+import subprocess
 
-class NavigationNode(Node):
+class NavigationController(Node):
     def __init__(self):
-        super().__init__('navigation')
-        self._action_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
-        self._cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-        
+        super().__init__('navigation_controller')
         self._status_pub = self.create_publisher(Status, '/status', 10)
-        # Control topic for Frontier Exploration (True = explore, False = pause)
-        self._explore_control_pub = self.create_publisher(Bool, '/explore_control', 10)
-        
-        self.current_status = Status()
-        self.create_timer(1.0, self.publish_status)
         
         self.create_subscription(PointStamped, '/goal1', self.goal1_callback, 10)
         self.create_subscription(PointStamped, '/goal2', self.goal2_callback, 10)
-        self.create_subscription(PointStamped, '/goal3', self.goal3_callback, 10)
-        self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
+        self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+        self.create_subscription(Point, '/human_detected', self.human_detected_callback, 10)
         
-        self.has_goal = False
-        self.pending_goal1 = None
-        self.pending_goal2 = None
-        self.active_msg = PointStamped()
-        self.active_goal_id = 0
-        self.turn_direction = 0.5
-        self.queue = Queue()
+        self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
         
-        self.get_logger().info('Midterm Master Controller ready. Awaiting goals while Frontier Explorer maps...')
+        self.current_status = Status()
+        self.current_pose = None
+        
+        self.goal1_target = None
+        self.goal2_target = None
+        self.pending_target = None
+        
+        self.target_dispatched = False
+        self.explorer_killed = False
+        
+        self.create_timer(0.1, self.publish_status)
+        self.create_timer(1.0, self.nav_dispatch_loop)
+        self.get_logger().info('Master Navigation Controller Active.')
+
+    def kill_explorer(self):
+        # Forcefully terminate the glitching explore node so Nav2 isn't preempted
+        if not self.explorer_killed:
+            try:
+                subprocess.run(["pkill", "-f", "explore"], check=False)
+                self.get_logger().info('>>> EXPLORATION NODE TERMINATED TO PRIORITIZE GOALS <<<')
+                self.explorer_killed = True
+            except Exception as e:
+                pass
+
+    def nav_dispatch_loop(self):
+        if self.pending_target is not None and not self.target_dispatched:
+            if self.nav_client.wait_for_server(timeout_sec=0.5):
+                x, y = self.pending_target
+                goal_msg = NavigateToPose.Goal()
+                goal_msg.pose.header.frame_id = 'map'
+                goal_msg.pose.header.stamp = self.get_clock().now().to_msg()
+                goal_msg.pose.pose.position.x = float(x)
+                goal_msg.pose.pose.position.y = float(y)
+                goal_msg.pose.pose.orientation.w = 1.0
+                
+                self.nav_client.send_goal_async(goal_msg)
+                self.target_dispatched = True
+                self.get_logger().info(f'>>> NAV2 DISPATCHED GOAL: ({x:.2f}, {y:.2f}) <<<')
+            else:
+                self.get_logger().warn('Waiting for Nav2 action server...')
+
+    def goal1_callback(self, msg):
+        self.kill_explorer()
+        self.current_status.goal1_received = True
+        self.current_status.goal1_achieved = False
+        self.goal1_target = (msg.point.x, msg.point.y)
+        self.pending_target = self.goal1_target
+        self.target_dispatched = False
+        self.get_logger().info(f'Received /goal1: X={msg.point.x:.2f}, Y={msg.point.y:.2f}')
+
+    def goal2_callback(self, msg):
+        self.kill_explorer()
+        self.current_status.goal2_received = True
+        self.current_status.goal2_achieved = False
+        self.goal2_target = (msg.point.x, msg.point.y)
+        self.get_logger().info(f'Received /goal2: X={msg.point.x:.2f}, Y={msg.point.y:.2f}')
+        
+        # If goal1 is already done (or bypassed) when goal2 arrives, dispatch immediately
+        if self.current_status.goal1_achieved:
+            self.pending_target = self.goal2_target
+            self.target_dispatched = False
+
+    def human_detected_callback(self, msg):
+        self.kill_explorer()
+        self.current_status.human_found = True
+        self.current_status.human_location = msg
+
+    def odom_callback(self, msg):
+        self.current_pose = msg.pose.pose.position
+        
+        # Distance check for Goal 1
+        if self.current_status.goal1_received and not self.current_status.goal1_achieved and self.goal1_target:
+            dist1 = math.sqrt((self.current_pose.x - self.goal1_target[0])**2 + (self.current_pose.y - self.goal1_target[1])**2)
+            if dist1 < 0.8:
+                self.current_status.goal1_achieved = True
+                self.get_logger().info('>>> GOAL 1 ACHIEVED! <<<')
+                
+                # Automatically queue Goal 2 if it was uploaded concurrently
+                if self.current_status.goal2_received and self.goal2_target:
+                    self.pending_target = self.goal2_target
+                    self.target_dispatched = False
+
+        # Distance check for Goal 2
+        if self.current_status.goal2_received and not self.current_status.goal2_achieved and self.goal2_target:
+            dist2 = math.sqrt((self.current_pose.x - self.goal2_target[0])**2 + (self.current_pose.y - self.goal2_target[1])**2)
+            if dist2 < 0.8:
+                self.current_status.goal2_achieved = True
+                self.get_logger().info('>>> GOAL 2 ACHIEVED! <<<')
 
     def publish_status(self):
         self._status_pub.publish(self.current_status)
 
-    def scan_callback(self, msg: LaserScan):
-        pass  # Muted to allow Frontier Exploration to navigate
-
-    def set_exploration_state(self, enable_exploration: bool):
-        msg = Bool()
-        msg.data = enable_exploration
-        self._explore_control_pub.publish(msg)
-
-    def dispatch_nav2_goal(self, pt: PointStamped, goal_id: int):
-        # Explicitly pause exploration ONLY when an active goal is dispatched
-        self.set_exploration_state(False)
-        
-        self.has_goal = True
-        self.active_goal_id = goal_id
-        self.active_msg = pt
-        self._cmd_vel_pub.publish(Twist()) # Force immediate stop
-        
-        if not self._action_client.wait_for_server(timeout_sec=3.0):
-            self.get_logger().error('Nav2 action server not available!')
-            return
-            
-        goal_msg = NavigateToPose.Goal()
-        goal_msg.pose.header = pt.header
-        goal_msg.pose.pose.position.x = pt.point.x
-        goal_msg.pose.pose.position.y = pt.point.y
-        goal_msg.pose.pose.orientation.w = 1.0
-        
-        send_goal_future = self._action_client.send_goal_async(goal_msg)
-        send_goal_future.add_done_callback(self.goal_response_callback)
-
-    def goal1_callback(self, msg: PointStamped):
-        self.get_logger().info(f'Received /goal1: X={msg.point.x:.2f}, Y={msg.point.y:.2f}')
-        self.current_status.goal1_received = True
-        self.current_status.goal1_achieved = False
-
-        if self.current_status.emergency:
-            self.get_logger().warn('Emergency active! Holding Goal 1 in queue...')
-            self.pending_goal1 = msg
-            return
-            
-        self.pending_goal1 = None
-        self.dispatch_nav2_goal(msg, 1)
-
-    def goal2_callback(self, msg: PointStamped):
-        self.get_logger().info(f'Received /goal2: X={msg.point.x:.2f}, Y={msg.point.y:.2f}')
-        self.current_status.goal2_received = True
-        self.current_status.goal2_achieved = False
-        
-        if self.current_status.emergency or not self.current_status.goal1_achieved:
-            self.get_logger().info('Goal 1 not yet achieved or Emergency active. Holding Goal 2 in queue (Exploration continues)...')
-            self.pending_goal2 = msg
-            return
-            
-        self.pending_goal2 = None
-        self.dispatch_nav2_goal(msg, 2)
-
-    def goal3_callback(self, msg: PointStamped):
-        self.get_logger().warn(f'EMERGENCY /goal3 RECEIVED: X={msg.point.x:.2f}, Y={msg.point.y:.2f}')
-        self.current_status.emergency = True
-
-        if self.has_goal:
-            self.get_logger().info(f'Interrupting active Goal {self.active_goal_id}. Saving to queue...')
-            self.queue.put((self.active_msg, self.active_goal_id))
-
-        self.dispatch_nav2_goal(msg, 3) 
-
-    def goal_response_callback(self, future):
-        goal_handle = future.result()
-        if not goal_handle.accepted:
-            self.get_logger().error('Goal rejected by Nav2 server.')
-            return
-        result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(self.get_result_callback)
-
-    def get_result_callback(self, future):
-        if future.result().status == GoalStatus.STATUS_SUCCEEDED:
-            self.get_logger().info(f'SUCCESS: Reached Goal {self.active_goal_id}!')
-            
-            if self.active_goal_id == 1:
-                self.current_status.goal1_achieved = True
-                self.pending_goal1 = None
-                
-                # Automatically execute Goal 2 if it arrived earlier
-                if self.pending_goal2 is not None:
-                    self.get_logger().info('Goal 1 complete! Executing pending Goal 2...')
-                    p_msg = self.pending_goal2
-                    self.pending_goal2 = None
-                    self.dispatch_nav2_goal(p_msg, 2)
-                    return
-
-            elif self.active_goal_id == 2:
-                self.current_status.goal2_achieved = True
-                self.pending_goal2 = None
-
-            elif self.active_goal_id == 3:
-                self.get_logger().info('Emergency goal secured.')
-                self.current_status.emergency = False  # Reset emergency flag
-                
-                # Priority 1: Resume goal interrupted by emergency
-                if self.queue.qsize() != 0:
-                    mssg, id = self.queue.get()
-                    self.get_logger().info(f'Resuming interrupted Goal {id} at X={mssg.point.x:.2f}, Y={mssg.point.y:.2f}')
-                    self.dispatch_nav2_goal(mssg, id)
-                    return  
-                
-                # Priority 2: Execute Goal 1 if received during emergency
-                if self.pending_goal1 is not None:
-                    self.get_logger().info('Emergency cleared! Executing pending Goal 1...')
-                    p_msg = self.pending_goal1
-                    self.pending_goal1 = None
-                    self.dispatch_nav2_goal(p_msg, 1)
-                    return
-
-                # Priority 3: Execute Goal 2 if Goal 1 is done and Goal 2 was waiting
-                if self.current_status.goal1_achieved and self.pending_goal2 is not None:
-                    self.get_logger().info('Emergency cleared! Executing pending Goal 2...')
-                    p_msg = self.pending_goal2
-                    self.pending_goal2 = None
-                    self.dispatch_nav2_goal(p_msg, 2)
-                    return
-
-            self.has_goal = False 
-            # No active or pending goals remain -> Resume exploration
-            self.get_logger().info('All active goals completed. Resuming Frontier Exploration...')
-            self.set_exploration_state(True)
-
 def main(args=None):
     rclpy.init(args=args)
-    node = NavigationNode()
+    node = NavigationController()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

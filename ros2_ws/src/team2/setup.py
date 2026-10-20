@@ -9,26 +9,23 @@ setup(
     version='0.0.0',
     packages=[package_name],
     data_files=[
-        ('share/ament_index/resource_index/packages',
-            ['resource/' + package_name]),
+        ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        # This line tells colcon build to include all files in the launch folder
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='drpuc',
-    maintainer_email='drpuc@todo.todo',
-    description='TODO: Package description',
+    maintainer='user',
+    maintainer_email='user@todo.todo',
+    description='Team2 Robotics Midterm Package',
     license='TODO: License declaration',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'navigation = team2.navigation:main',
+            'human_location = team2.human_location_node:main',
             'explore = team2.explore:main',
-            'goal1 = team2.goal1:main',
-            'goal2 = team2.goal2:main',
-            'goal3 = team2.goal3:main',
         ],
     },
 )
