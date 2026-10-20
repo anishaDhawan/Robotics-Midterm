@@ -108,6 +108,8 @@ ros2 topic echo /status
 
 ### Sources
 
+- [Frontier exploration reference](https://github.com/mertgulerx/frontier_exploration_ros2): costmap filtering and failed-frontier memory ideas; implemented separately in Python here.
+
 - [Ultralytics YOLOv8](https://docs.ultralytics.com/models/yolov8/): person, pose and segmentation models.
 - [OpenCV](https://docs.opencv.org/4.x/): image processing.
 - [ROS CameraInfo](https://docs.ros.org/en/humble/p/sensor_msgs/msg/CameraInfo.html), [tf2](https://docs.ros.org/en/humble/Concepts/Intermediate/About-Tf2.html): depth projection and map coordinates.
@@ -115,4 +117,9 @@ ros2 topic echo /status
 
 ### This branch
 
-This is the smaller vision integration. It keeps the team’s original DWB controller and frontier selection. Vision, depth obstacles, human-found stopping and team2 namespacing are included. This combined branch has not been run in Ubuntu yet.
+This keeps the team's DWB controller and adds vision, depth obstacles, human-found stopping and team2 namespacing. Exploration now checks connected free space and the costmap, remembers attempted areas, and prefers boundaries with more unknown space nearby. If several trips reveal little new map, it favours farther targets. Navigation still owns all movement goals.
+
+The updated explorer reached several different targets in Ubuntu. The complete autonomous exploration, human detection and stopping sequence is not yet verified. In the latest manual-goal test, navigation reported arrival, but the human was mostly outside the camera image and no human location was accepted.
+
+Start the world and mission together for a fresh test. Restarting SLAM alone after a long run can start a new map from accumulated, drifted wheel odometry. Model installation/export commands should also be checked on each teammate's machine.
+
