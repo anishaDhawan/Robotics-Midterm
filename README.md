@@ -115,4 +115,4 @@ ros2 topic echo /status
 
 ### This branch
 
-This is the smaller vision integration. It keeps the team’s original DWB controller and frontier selection. Vision, depth obstacles, human-found stopping and team2 namespacing are included. This combined branch has not been run in Ubuntu yet.
+This is the smaller vision integration. It keeps the team’s original DWB controller and frontier selection. Vision, depth obstacles, human-found stopping and team2 namespacing are included.
