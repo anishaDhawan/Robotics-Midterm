@@ -1,3 +1,5 @@
+sudo cp ~/Robotics-Midterm/turtlebot3_house_with_human.world /opt/ros/humble/share/turtlebot3_gazebo/worlds/turtlebot3_house.world
+
 ### Install
 
 sudo apt install ros-humble-turtlebot3* ros-humble-nav2* ros-humble-cartographer* -y
