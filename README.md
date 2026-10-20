@@ -1,3 +1,9 @@
+### Install
+
+sudo apt install ros-humble-turtlebot3* ros-humble-nav2* ros-humble-cartographer* -y
+
+pip install ultralytics "setuptools==58.2.0"
+
 ### Build workspace
 
 cd ~/Robotics-Midterm/ros2_ws
