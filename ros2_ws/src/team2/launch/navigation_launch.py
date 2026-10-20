@@ -51,6 +51,9 @@ def _patch_params(params):
     params['planner_server']['ros__parameters']['expected_planner_frequency'] = 2.0
     if 'controller_server' in params:
         params['controller_server']['ros__parameters']['controller_frequency'] = 5.0
+        # Goals give a position only, so finish without turning to face east.
+        params['controller_server']['ros__parameters']['general_goal_checker'].update(
+            yaw_goal_tolerance=math.pi)
     # A zero expected_update_rate disables depth-arrival timeouts in Nav2.
     # Keep depth in a separate layer: LiDAR rays above a small floor object
     # must not erase the camera's obstacle mark.
