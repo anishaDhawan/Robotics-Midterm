@@ -9,8 +9,7 @@
 - Local Costmap for obstacle avoiding
 
 ### Exploration
-- Autonomous Frontier Exploration
-- Grid Traversal
+- Frontier Exploration
 - LiDAR used for obstacle avoidance
 
 
