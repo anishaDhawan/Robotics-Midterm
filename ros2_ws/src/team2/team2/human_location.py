@@ -13,7 +13,7 @@ class AIDetectorNode(Node):
         super().__init__('human_location_node')
         self.bridge = CvBridge()
         
-        self.get_logger().info('Loading Dynamic-Depth YOLOv8 AI Model...')
+        self.get_logger().info('Loading Proximity-Filtered YOLOv8 AI Model...')
         self.model = YOLO('yolov8n.pt')
         
         self.fx = self.fy = self.cx = self.cy = None
@@ -27,7 +27,7 @@ class AIDetectorNode(Node):
         self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         
         self.human_pub = self.create_publisher(Point, '/human_detected', 10)
-        self.get_logger().info('Dynamic Vision Active. Scanning anywhere on map...')
+        self.get_logger().info('Proximity Vision Active. Scanning for close humans...')
 
     def info_callback(self, msg):
         if self.fx is None:
@@ -55,7 +55,8 @@ class AIDetectorNode(Node):
                 for box in boxes:
                     conf = box.conf[0].item()
                     
-                    if conf > 0.35:
+                    # Require higher confidence (50%) to prevent startup ghost triggers
+                    if conf > 0.50:
                         x1, y1, x2, y2 = box.xyxy[0].tolist()
                         box_width = x2 - x1
                         box_height = y2 - y1
@@ -63,17 +64,19 @@ class AIDetectorNode(Node):
                         if (box_height / (box_width + 1e-5)) < 1.1:
                             continue
 
-                        # Calibrated depth calculation: scale down factor and clamp to realistic range
                         raw_distance = (self.fy * 1.8) / box_height
-                        distance_z = min(max(raw_distance * 0.4, 0.5), 4.0)
+                        distance_z = min(max(raw_distance * 0.35, 0.4), 3.0)
                         
-                        # Project dynamically using robot's live position and heading
+                        # PROXIMITY GATE: Ignore detections calculated further than 3.5 meters away
+                        if distance_z > 3.5:
+                            continue
+
                         human_map_x = self.robot_x + distance_z * math.cos(self.robot_yaw)
                         human_map_y = self.robot_y + distance_z * math.sin(self.robot_yaw)
                         
                         self.human_found = True
                         self.human_pub.publish(Point(x=float(human_map_x), y=float(human_map_y), z=0.0))
-                        self.get_logger().info(f'>>> DYNAMIC HUMAN LOCATED AT: X={human_map_x:.2f}, Y={human_map_y:.2f} <<<')
+                        self.get_logger().info(f'>>> REAL PROXIMITY HUMAN AT: X={human_map_x:.2f}, Y={human_map_y:.2f} <<<')
                         return
         except Exception:
             pass

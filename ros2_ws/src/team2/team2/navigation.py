@@ -52,7 +52,9 @@ class NavigationController(Node):
                 x, y = self.pending_target
                 goal_msg = NavigateToPose.Goal()
                 goal_msg.pose.header.frame_id = 'map'
-                goal_msg.pose.header.stamp = self.get_clock().now().to_msg()
+                # Let Nav2 use the latest transform instead of a rigid clock stamp that causes TF errors
+                goal_msg.pose.header.stamp.sec = 0
+                goal_msg.pose.header.stamp.nanosec = 0
                 goal_msg.pose.pose.position.x = float(x)
                 goal_msg.pose.pose.position.y = float(y)
                 goal_msg.pose.pose.orientation.w = 1.0
