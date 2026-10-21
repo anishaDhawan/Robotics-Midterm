@@ -1,95 +1,184 @@
-#!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from nav_msgs.msg import OccupancyGrid
-from sensor_msgs.msg import LaserScan
-from geometry_msgs.msg import PointStamped, Twist
+from rclpy.action import ActionClient
+from nav_msgs.msg import OccupancyGrid, Odometry
+from nav2_msgs.action import NavigateToPose
+from std_msgs.msg import Bool
 import numpy as np
+import math
 
-class LidarSafeExplorer(Node):
+
+class FrontierExplorer(Node):
     def __init__(self):
-        super().__init__('explore_node')
-        
+        super().__init__('frontier_explorer')
         self.map_sub = self.create_subscription(OccupancyGrid, '/map', self.map_callback, 10)
-        self.scan_sub = self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
-        
-        self.goal_pub = self.create_publisher(PointStamped, '/goal_point', 10)
-        self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-        
-        self.min_obstacle_distance = 0.4  # meters
-        self.is_danger = False
-        self.latest_map = None
-        
-        self.get_logger().info('LiDAR-Backed Safe Explorer Active.')
+        self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+        self.pause_sub = self.create_subscription(Bool, '/pause_exploration', self.pause_callback, 10)
 
-    def scan_callback(self, msg):
-        # Check 180 degrees in front of the robot for immediate obstacles
-        front_ranges = msg.ranges[len(msg.ranges)*3//8 : len(msg.ranges)*5//8]
-        valid_ranges = [r for r in front_ranges if not np.isinf(r) and not np.isnan(r)]
-        
-        if valid_ranges and min(valid_ranges) < self.min_obstacle_distance:
-            self.is_danger = True
-            # Emergency stop & backup command
-            twist = Twist()
-            twist.linear.x = -0.05
-            twist.angular.z = 0.5
-            self.cmd_pub.publish(twist)
-            self.get_logger().warn(f'LiDAR Emergency! Wall detected at {min(valid_ranges):.2f}m. Backing away.')
-        else:
-            self.is_danger = False
+        self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
+
+        self.latest_map = None
+        self.is_navigating = False
+        self.is_paused = False
+        self.min_cluster_size = 8
+        self.robot_x = 0.0
+        self.robot_y = 0.0
+
+        self.visited_goals = []
+        self.last_target = None
+
+        self.timer = self.create_timer(3.0, self.control_loop)
+        self.get_logger().info('Cooperative Timer-Based Explorer Initialized!')
+
+    def pause_callback(self, msg):
+        self.is_paused = msg.data
+        if self.is_paused:
+            self.get_logger().info('Exploration standing by for manual Nav2 goals...')
+
+    def odom_callback(self, msg):
+        self.robot_x = msg.pose.pose.position.x
+        self.robot_y = msg.pose.pose.position.y
 
     def map_callback(self, msg):
-        if self.is_danger:
-            return  # Skip frontier selection if escaping an obstacle
-            
-        width = msg.info.width
-        height = msg.info.height
-        resolution = msg.info.resolution
-        origin_x = msg.info.origin.position.x
-        origin_y = msg.info.origin.position.y
-        data = np.array(msg.data, dtype=np.int8).reshape((height, width))
+        self.latest_map = msg
 
-        # Find true unmapped frontiers: Free cells (0) bordering unknown space (-1)
+    def control_loop(self):
+        if not self.is_paused and not self.is_navigating and self.latest_map is not None:
+            self.explore_next_frontier()
+
+    def explore_next_frontier(self):
+        try:
+            grid = np.array(self.latest_map.data).reshape((self.latest_map.info.height, self.latest_map.info.width))
+            frontiers = self.find_frontier_points(grid)
+
+            if len(frontiers) == 0:
+                self.get_logger().info('Exploration complete! No unknown frontiers left.')
+                return
+
+            clusters = self.cluster_points(frontiers)
+            valid_clusters = [c for c in clusters if len(c) >= self.min_cluster_size]
+
+            if not valid_clusters:
+                return
+
+            scored_targets = []
+
+            for cluster in valid_clusters:
+                centroid_float = np.mean(cluster, axis=0)
+                best_p = min(cluster, key=lambda p: math.hypot(p[0] - centroid_float[0], p[1] - centroid_float[1]))
+                r, c = int(best_p[0]), int(best_p[1])
+
+                target_x = self.latest_map.info.origin.position.x + (c * self.latest_map.info.resolution)
+                target_y = self.latest_map.info.origin.position.y + (r * self.latest_map.info.resolution)
+
+                is_too_close = False
+                for vx, vy in self.visited_goals:
+                    if math.hypot(target_x - vx, target_y - vy) < 1.0:
+                        is_too_close = True
+                        break
+
+                if is_too_close:
+                    continue
+
+                radius = 15
+                r_min, r_max = max(0, r - radius), min(grid.shape[0], r + radius)
+                c_min, c_max = max(0, c - radius), min(grid.shape[1], c + radius)
+
+                unknown_count = np.sum(grid[r_min:r_max, c_min:c_max] == -1)
+                dist = math.hypot(target_x - self.robot_x, target_y - self.robot_y)
+                score = unknown_count / (dist + 1.0)
+
+                scored_targets.append({
+                    'x': target_x, 'y': target_y, 'score': score, 'dist': dist
+                })
+
+            if not scored_targets:
+                self.visited_goals.clear()
+                self.last_target = None
+                return
+
+            scored_targets.sort(key=lambda item: -item['score'])
+            best_target = scored_targets[0]
+            target_x = best_target['x']
+            target_y = best_target['y']
+
+            if self.last_target and math.hypot(target_x - self.last_target[0], target_y - self.last_target[1]) < 0.2:
+                self.visited_goals.append((target_x, target_y))
+                return
+
+            self.last_target = (target_x, target_y)
+            self.visited_goals.append((target_x, target_y))
+            self.send_goal(target_x, target_y, best_target['dist'])
+
+        except Exception as e:
+            self.get_logger().error(f'Crash prevented: {str(e)}')
+            self.is_navigating = False
+
+    def find_frontier_points(self, grid):
+        free_mask = (grid == 0)
+        unknown_mask = (grid == -1)
         frontiers = []
-        for y in range(8, height - 8, 2):
-            for x in range(8, width - 8, 2):
-                if data[y, x] == 0:
-                    neighbors = data[y-1:y+2, x-1:x+2]
-                    if -1 in neighbors:
-                        # Ensure no mapped walls (100) are within a strict 8-cell safety zone (~0.4m)
-                        local_area = data[y-8:y+9, x-8:x+9]
-                        if 100 not in local_area:
-                            frontiers.append((x, y))
+        rows, cols = grid.shape
+        for r in range(1, rows - 1):
+            for c in range(1, cols - 1):
+                if free_mask[r, c]:
+                    if np.any(unknown_mask[r - 1:r + 2, c - 1:c + 2]):
+                        frontiers.append((r, c))
+        return frontiers
 
-        if not frontiers:
-            self.get_logger().info('No safe frontiers found. Exploration complete.')
+    def cluster_points(self, points):
+        clusters = []
+        visited = set()
+        for p in points:
+            if p in visited:
+                continue
+            cluster = []
+            queue = [p]
+            visited.add(p)
+            while queue:
+                curr = queue.pop(0)
+                cluster.append(curr)
+                for other in points:
+                    if other not in visited and (abs(curr[0] - other[0]) <= 1 and abs(curr[1] - other[1]) <= 1):
+                        visited.add(other)
+                        queue.append(other)
+            clusters.append(cluster)
+        return clusters
+
+    def send_goal(self, x, y, dist):
+        if not self.nav_client.wait_for_server(timeout_sec=2.0):
             return
+        self.is_navigating = True
+        goal_msg = NavigateToPose.Goal()
+        goal_msg.pose.header.frame_id = 'map'
+        goal_msg.pose.header.stamp = self.get_clock().now().to_msg()
+        goal_msg.pose.pose.position.x = float(x)
+        goal_msg.pose.pose.position.y = float(y)
+        goal_msg.pose.pose.orientation.w = 1.0
+        self.get_logger().info(f'Hunting CLOSEST space at: ({x:.2f}, {y:.2f}) | Distance: {dist:.1f}m')
+        self.nav_client.send_goal_async(goal_msg).add_done_callback(self.goal_response_callback)
 
-        # Pick the first verified frontier in unknown space
-        target_x, target_y = frontiers[0]
-        world_x = target_x * resolution + origin_x
-        world_y = target_y * resolution + origin_y
+    def goal_response_callback(self, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.is_navigating = False
+            return
+        goal_handle.get_result_async().add_done_callback(self.get_result_callback)
 
-        goal_msg = PointStamped()
-        goal_msg.header.stamp = self.get_clock().now().to_msg()
-        goal_msg.header.frame_id = 'map'
-        goal_msg.point.x = float(world_x)
-        goal_msg.point.y = float(world_y)
-        goal_msg.point.z = 0.0
+    def get_result_callback(self, future):
+        status = future.result().status
+        if status == 5:
+            self.get_logger().info('Exploration goal preempted by manual target.')
+        self.is_navigating = False
 
-        self.goal_pub.publish(goal_msg)
-        self.get_logger().info(f'Navigating to Unmapped Frontier: X={world_x:.2f}, Y={world_y:.2f}')
 
 def main(args=None):
     rclpy.init(args=args)
-    node = LidarSafeExplorer()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    node = FrontierExplorer()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
